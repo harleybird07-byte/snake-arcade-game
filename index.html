@@ -366,4 +366,680 @@
     let gameSpeed = INITIAL_SPEED; 
     let gameInterval;
     let lastPlayerDirection = { x: 0, y: 0 }; 
-    let isGameStarted = false;
+    let isGameStarted = false; 
+    let isGameOver = false;
+    
+    // --- TOUCH/SWIPE STATE ---
+    let touchStartX = 0;
+    let touchStartY = 0;
+    const SWIPE_THRESHOLD = 50; 
+
+    // --- FIREBASE STATE ---
+    let db;
+    let auth;
+    let userId = null;
+    let appId;
+
+    // --- FIREBASE SETUP AND LEADERBOARD LOGIC ---
+    async function setupFirebase() {
+        if (typeof __firebase_config === 'undefined' || typeof __app_id === 'undefined') {
+            console.error("Firebase config or app ID is missing. Leaderboard disabled.");
+            return;
+        }
+
+        appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(__firebase_config);
+
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+        
+        try {
+            if (typeof __initial_auth_token !== 'undefined') {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+        } catch (error) {
+            console.error("Firebase Auth failed:", error);
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                userId = user.uid;
+                displayUserId.textContent = userId;
+                setupLeaderboardListener();
+            } else {
+                userId = 'unauthenticated_' + Math.random().toString(36).substring(2, 9);
+                displayUserId.textContent = 'Auth Failed';
+            }
+        });
+    }
+
+    async function saveScore(name, finalScore) {
+        if (!db || finalScore === 0) return;
+        const leaderboardRef = collection(db, `artifacts/${appId}/public/data/leaderboard`);
+        
+        try {
+            await addDoc(leaderboardRef, {
+                name: name.trim() || "ANONYMOUS",
+                score: finalScore,
+                userId: userId,
+                createdAt: serverTimestamp()
+            });
+            console.log("Score saved successfully!");
+        } catch (e) {
+            console.error("Error adding document: ", e);
+        }
+    }
+
+    function updateLeaderboardUI(scores) {
+        leaderboardList.innerHTML = '';
+        if (scores.length === 0) {
+            leaderboardList.innerHTML = '<li style="justify-content:center;">No scores yet!</li>';
+            return;
+        }
+
+        scores.forEach((item, index) => {
+            const listItem = document.createElement('li');
+            listItem.innerHTML = `
+                <span class="rank">${index + 1}.</span>
+                <span class="name">${item.name}</span>
+                <span class="score">${item.score}</span>
+            `;
+            leaderboardList.appendChild(listItem);
+        });
+    }
+
+    function setupLeaderboardListener() {
+        if (!db) return;
+        const leaderboardRef = collection(db, `artifacts/${appId}/public/data/leaderboard`);
+        const q = query(leaderboardRef, limit(20)); 
+
+        onSnapshot(q, (snapshot) => {
+            let scores = [];
+            snapshot.forEach((doc) => {
+                const data = doc.data();
+                if (typeof data.score === 'number' && data.name) {
+                    scores.push({ id: doc.id, name: data.name, score: data.score });
+                }
+            });
+            scores.sort((a, b) => b.score - a.score);
+            updateLeaderboardUI(scores.slice(0, 10));
+        }, (error) => {
+            console.error("Leaderboard snapshot error:", error);
+            leaderboardList.innerHTML = '<li style="justify-content:center; color: #ff0077;">Error loading scores.</li>';
+        });
+    }
+    
+    // Function to toggle leaderboard visibility based on screen size and game state
+    function toggleLeaderboardVisibility(show) {
+        if (window.innerWidth <= 800) {
+            // On mobile, only show if 'show' is true (i.e., game over)
+            leaderboardColumn.style.display = show ? 'flex' : 'none';
+            // Also manage the close button visibility on mobile
+            closeLeaderboardButton.style.display = show ? 'block' : 'none';
+        } else {
+            // Always show on desktop and hide the close button
+            leaderboardColumn.style.display = 'flex';
+            closeLeaderboardButton.style.display = 'none';
+        }
+    }
+
+    // New event listener for the close button
+    closeLeaderboardButton.addEventListener('click', () => {
+        toggleLeaderboardVisibility(false);
+    });
+
+    // --- GAME INITIALIZATION AND STATE RESET ---
+
+    function initializeGame() {
+        tileSize = canvas.width / TILE_COUNT;
+        
+        // Reset ALL state variables
+        playerSnake = [{ x: 10, y: 10 }]; 
+        playerVelocity = { x: 0, y: 0 };
+        lastPlayerDirection = { x: 0, y: 0 };
+        score = 0;
+        gameSpeed = INITIAL_SPEED;
+        blackHole = null;
+        obstacles = [];
+        enemySnakes = [];
+        isGameStarted = false; 
+        isGameOver = false;
+        
+        scoreValue.textContent = 0;
+        finalScore.textContent = 0;
+        
+        nameInputGroup.style.display = 'none';
+        finalScoreDisplay.style.display = 'none'; 
+        restartButton.textContent = 'Start Game';
+
+        messageText.textContent = 'Welcome to SNAKE ARCADE! Swipe or use arrows to move.';
+        messageText.classList.remove('game-over-text');
+        messageBox.style.display = 'flex';
+        
+        // Hide leaderboard on initialization if on mobile
+        toggleLeaderboardVisibility(false);
+
+        placeFood();
+        
+        clearInterval(gameInterval);
+        gameInterval = setInterval(gameLoop, gameSpeed);
+        
+        draw(); 
+        window.focus(); 
+    }
+
+    // --- CORE GAME OBJECT PLACEMENT AND COLLISION CHECKING (Logic is the same) ---
+
+    function isPlayerSnakeCollision(point) {
+        return playerSnake.some(segment => segment.x === point.x && segment.y === point.y);
+    }
+    
+    function isObstacleCollision(point) {
+        return obstacles.some(obs => obs.x === point.x && obs.y === point.y);
+    }
+
+    function isEnemySnakeCollision(point, excludeId = null) {
+        for(const enemy of enemySnakes) {
+            if (excludeId !== null && enemy.id === excludeId) continue;
+            if (enemy.body.some(segment => segment.x === point.x && segment.y === point.y)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function isOccupied(point) {
+        if (isPlayerSnakeCollision(point)) return true;
+        if (isObstacleCollision(point)) return true;
+        if (isEnemySnakeCollision(point)) return true;
+        if (point.x === food.x && point.y === food.y) return true;
+        if (blackHole && point.x === blackHole.x && point.y === blackHole.y) return true; 
+        return false;
+    }
+
+    function generateRandomTile() {
+        return {
+            x: Math.floor(Math.random() * TILE_COUNT),
+            y: Math.floor(Math.random() * TILE_COUNT)
+        };
+    }
+
+    function placeFood() {
+        let newFood;
+        do {
+            newFood = generateRandomTile();
+        } while (isOccupied(newFood)); 
+        food = newFood;
+    }
+
+    function placeBlackHole() {
+        let newBlackHole;
+        do {
+            newBlackHole = generateRandomTile();
+        } while (isOccupied(newBlackHole)); 
+        blackHole = newBlackHole;
+    }
+
+    // --- OBSTACLE MANAGEMENT ---
+
+    function generateObstacles(count) {
+        for (let i = 0; i < count; i++) {
+            let newObstacle;
+            do {
+                newObstacle = generateRandomTile();
+            } while (isOccupied(newObstacle));
+            obstacles.push(newObstacle);
+        }
+    }
+
+    // --- ENEMY SNAKE MANAGEMENT ---
+
+    function spawnEnemySnake() {
+        if (enemySnakes.length >= MAX_ENEMY_SNACKS) return;
+
+        let startPos;
+        do {
+            startPos = generateRandomTile();
+        } while (isOccupied(startPos) || Math.abs(startPos.x - playerSnake[0].x) < 5 || Math.abs(startPos.y - playerSnake[0].y) < 5); 
+        
+        const directions = [{x: 1, y: 0}, {x: -1, y: 0}, {x: 0, y: 1}, {x: 0, y: -1}];
+        const initialVel = directions[Math.floor(Math.random() * directions.length)];
+
+        enemySnakes.push({
+            id: Date.now() + Math.random(),
+            body: [startPos, {x: startPos.x - initialVel.x, y: startPos.y - initialVel.y}],
+            velocity: initialVel,
+            color: `hsl(${Math.random() * 360}, 70%, 50%)`
+        });
+    }
+
+    function moveEnemySnakes() {
+        const playerHead = playerSnake[0];
+        
+        enemySnakes = enemySnakes.filter(enemy => {
+            const head = enemy.body[0];
+            let newVelocity = { ...enemy.velocity };
+            let potentialHead = { x: head.x + newVelocity.x, y: head.y + newVelocity.y };
+
+            // 1. AI Decision (70% chance to try and move toward player)
+            if (Math.random() < ENEMY_AI_MOVE_CHANCE) {
+                const diffX = playerHead.x - head.x;
+                const diffY = playerHead.y - head.y;
+                let desiredX = 0;
+                let desiredY = 0;
+
+                if (Math.abs(diffX) > Math.abs(diffY)) {
+                    desiredX = diffX > 0 ? 1 : -1;
+                } else if (Math.abs(diffY) > 0) {
+                    desiredY = diffY > 0 ? 1 : -1;
+                }
+                
+                // Only change direction if it's not immediately reversing
+                if (desiredX !== -enemy.velocity.x || desiredY !== -enemy.velocity.y) {
+                    if (desiredX !== 0) newVelocity = { x: desiredX, y: 0 };
+                    else if (desiredY !== 0) newVelocity = { x: 0, y: desiredY };
+                }
+            }
+
+            potentialHead = { x: head.x + newVelocity.x, y: head.y + newVelocity.y };
+
+            // 2. Collision Check (Wall/Obstacle/Other Snake/Own Body)
+            const isSelfCollision = enemy.body.slice(1).some(seg => seg.x === potentialHead.x && seg.y === potentialHead.y);
+            
+            // Check collision against walls or obstacles or other enemies
+            if (potentialHead.x < 0 || potentialHead.x >= TILE_COUNT || 
+                potentialHead.y < 0 || potentialHead.y >= TILE_COUNT || 
+                isObstacleCollision(potentialHead) || 
+                isEnemySnakeCollision(potentialHead, enemy.id) || 
+                isSelfCollision) {
+                
+                // If collision detected, try a random non-reversing, non-colliding move
+                const validMoves = [];
+                const directions = [{x: 1, y: 0}, {x: -1, y: 0}, {x: 0, y: 1}, {x: 0, y: -1}];
+                
+                for (const dir of directions) {
+                    if (dir.x === -enemy.velocity.x && dir.y === -enemy.velocity.y) continue; // Skip reverse
+                    
+                    const testHead = { x: head.x + dir.x, y: head.y + dir.y };
+                    if (testHead.x >= 0 && testHead.x < TILE_COUNT && 
+                        testHead.y >= 0 && testHead.y < TILE_COUNT && 
+                        !isObstacleCollision(testHead) && 
+                        !isEnemySnakeCollision(testHead, enemy.id) &&
+                        !enemy.body.slice(1).some(seg => seg.x === testHead.x && seg.y === testHead.y)) {
+                        validMoves.push(dir);
+                    }
+                }
+
+                if (validMoves.length > 0) {
+                    newVelocity = validMoves[Math.floor(Math.random() * validMoves.length)];
+                    potentialHead = { x: head.x + newVelocity.x, y: head.y + newVelocity.y };
+                } else {
+                    // Stuck! Can't move. Skip this enemy's move this turn.
+                    return true;
+                }
+            }
+
+            // 3. Update Enemy State
+            enemy.velocity = newVelocity;
+            enemy.body.unshift(potentialHead);
+            enemy.body.pop(); // Enemies do not grow, they maintain length 2
+
+            return true; // Keep enemy
+        });
+    }
+
+    // --- PLAYER MOVEMENT AND COLLISIONS ---
+
+    function movePlayerSnake() {
+        const head = { x: playerSnake[0].x + playerVelocity.x, y: playerSnake[0].y + playerVelocity.y };
+        lastPlayerDirection = { ...playerVelocity };
+
+        if (checkPlayerCollision(head)) {
+            gameOver();
+            return false;
+        }
+
+        playerSnake.unshift(head);
+
+        // Check for food consumption
+        if (head.x === food.x && head.y === food.y) {
+            score++;
+            scoreValue.textContent = score;
+
+            // DIFFICULTY SCALING
+            if (score === OBSTACLE_THRESHOLD_1) {
+                generateObstacles(OBSTACLE_COUNT_1);
+            }
+            if (score === OBSTACLE_THRESHOLD_2) {
+                generateObstacles(OBSTACLE_COUNT_2);
+                spawnEnemySnake(); // Start spawning enemies at this level
+            }
+            if (score > ENEMY_SNAKE_THRESHOLD && score % 10 === 0 && enemySnakes.length < MAX_ENEMY_SNACKS) {
+                spawnEnemySnake();
+            }
+
+            if (score <= MAX_SPEED_CAP_SCORE) {
+                gameSpeed -= SPEED_INCREMENT;
+                clearInterval(gameInterval);
+                gameInterval = setInterval(gameLoop, gameSpeed);
+            }
+            
+            // Check for black hole placement
+            if (score >= APPLES_REQUIRED_FOR_WIN && blackHole === null) {
+                placeBlackHole(); 
+            }
+
+            placeFood();
+        } else {
+            playerSnake.pop();
+        }
+        return true;
+    }
+
+    function checkPlayerCollision(head) {
+        // 1. Wall Collision
+        if (head.x < 0 || head.x >= TILE_COUNT || head.y < 0 || head.y >= TILE_COUNT) {
+            return true;
+        }
+        
+        // 2. Self Collision
+        for (let i = 1; i < playerSnake.length; i++) {
+            if (head.x === playerSnake[i].x && head.y === playerSnake[i].y) {
+                return true;
+            }
+        }
+
+        // 3. Obstacle Collision
+        if (isObstacleCollision(head)) {
+            return true;
+        }
+
+        // 4. Black Hole Collision (Win Condition Met)
+        if (blackHole && head.x === blackHole.x && head.y === blackHole.y) {
+            levelWon();
+            return false;
+        }
+
+        // 5. Enemy Snake Collision (Head hits any enemy segment)
+        for(const enemy of enemySnakes) {
+            if (enemy.body.some(segment => segment.x === head.x && segment.y === head.y)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+
+    function gameEnd(message) {
+        clearInterval(gameInterval);
+        isGameOver = true;
+        
+        messageText.textContent = message;
+        messageText.classList.add('game-over-text');
+        finalScore.textContent = score;
+        
+        finalScoreDisplay.style.display = 'block'; 
+        nameInputGroup.style.display = 'flex';
+        restartButton.textContent = 'Save Score & Restart';
+        messageBox.style.display = 'flex';
+        playerNameInput.focus();
+        
+        // Show leaderboard when game ends
+        toggleLeaderboardVisibility(true);
+    }
+
+    function levelWon() {
+        gameEnd('LEVEL COMPLETE!');
+    }
+
+    function gameOver() {
+        gameEnd('GAME OVER!');
+    }
+
+    function gameLoop() {
+        if (!isGameStarted || isGameOver) {
+            draw();
+            return;
+        }
+
+        // 1. Move Enemy Snakes before the player
+        moveEnemySnakes();
+
+        // 2. Move Player Snake
+        if (movePlayerSnake()) {
+            draw();
+        }
+    }
+
+    // --- DRAWING FUNCTIONS ---
+
+    function clearScreen() {
+        ctx.fillStyle = '#0d1117'; 
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function drawSnake() {
+        // Player Snake (Pink/White)
+        ctx.strokeStyle = '#ffffff'; 
+        playerSnake.forEach((segment, index) => {
+            ctx.fillStyle = index === 0 ? '#ffffff' : '#ff0077';
+            ctx.fillRect(segment.x * tileSize, segment.y * tileSize, tileSize - 1, tileSize - 1);
+            ctx.strokeRect(segment.x * tileSize, segment.y * tileSize, tileSize - 1, tileSize - 1);
+        });
+
+        // Enemy Snakes (Random Color/Black)
+        enemySnakes.forEach(enemy => {
+            enemy.body.forEach((segment, index) => {
+                ctx.fillStyle = index === 0 ? '#ffffff' : enemy.color; // Enemy head is white too for high visibility
+                ctx.fillRect(segment.x * tileSize, segment.y * tileSize, tileSize - 1, tileSize - 1);
+                ctx.strokeStyle = '#000000';
+                ctx.strokeRect(segment.x * tileSize, segment.y * tileSize, tileSize - 1, tileSize - 1);
+            });
+        });
+    }
+
+    function drawFood() {
+        ctx.shadowBlur = 0;
+        ctx.font = `${tileSize * 0.9}px sans-serif`; 
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const centerX = food.x * tileSize + tileSize / 2;
+        const centerY = food.y * tileSize + tileSize / 2;
+        ctx.fillText('🍎', centerX, centerY + (tileSize * 0.05)); 
+    }
+
+    function drawObstacles() {
+        ctx.fillStyle = '#44475a'; // Dark gray/purple
+        ctx.strokeStyle = '#282a36';
+        obstacles.forEach(obs => {
+            ctx.fillRect(obs.x * tileSize, obs.y * tileSize, tileSize - 1, tileSize - 1);
+            ctx.strokeRect(obs.x * tileSize, obs.y * tileSize, tileSize - 1, tileSize - 1);
+        });
+    }
+
+    function drawBlackHole() {
+        if (!blackHole) return;
+        const centerX = blackHole.x * tileSize + tileSize / 2;
+        const centerY = blackHole.y * tileSize + tileSize / 2;
+        const radius = tileSize / 2;
+        
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = '#00ffff'; // Cyan glow
+
+        ctx.fillStyle = '#000000'; 
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 0.9, 0, 2 * Math.PI);
+        ctx.fill();
+
+        ctx.fillStyle = '#1c1e21'; 
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 0.7, 0, 2 * Math.PI);
+        ctx.fill();
+
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 0.8, 0, Math.PI / 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 0.8, Math.PI, 3 * Math.PI / 2);
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = 'transparent';
+    }
+    
+    function draw() {
+        clearScreen();
+        drawFood();
+        drawObstacles();
+        drawBlackHole(); 
+        drawSnake();
+    }
+
+    // --- INPUT HANDLERS ---
+
+    function setDirection(newX, newY) {
+        // Prevents reversing direction immediately
+        if (lastPlayerDirection.x === -newX && lastPlayerDirection.y === -newY) {
+            return;
+        }
+
+        playerVelocity.x = newX;
+        playerVelocity.y = newY;
+        
+        // CRITICAL START LOGIC: Only start the game on the FIRST directional input
+        if (!isGameStarted && !isGameOver) {
+            isGameStarted = true;
+            messageBox.style.display = 'none';
+            // Hide leaderboard on start
+            toggleLeaderboardVisibility(false); 
+        }
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (messageBox.style.display === 'flex' && isGameStarted) return;
+        if (isGameOver && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return; 
+
+        switch (e.key) {
+            case 'ArrowUp':
+                e.preventDefault();
+                setDirection(0, -1);
+                break;
+            case 'ArrowDown':
+                e.preventDefault();
+                setDirection(0, 1);
+                break;
+            case 'ArrowLeft':
+                e.preventDefault();
+                setDirection(-1, 0);
+                break;
+            case 'ArrowRight':
+                e.preventDefault();
+                setDirection(1, 0);
+                break;
+        }
+    });
+
+    // 1. SWIPE CONTROLS IMPLEMENTATION
+    
+    canvas.addEventListener('touchstart', (e) => {
+        if (isGameOver) return;
+        const touch = e.touches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+    }, { passive: true });
+
+    canvas.addEventListener('touchend', (e) => {
+        if (isGameOver) return;
+        
+        const touchEnd = e.changedTouches[0];
+        const deltaX = touchEnd.clientX - touchStartX;
+        const deltaY = touchEnd.clientY - touchStartY;
+
+        if (Math.abs(deltaX) < SWIPE_THRESHOLD && Math.abs(deltaY) < SWIPE_THRESHOLD) {
+            return;
+        }
+
+        if (Math.abs(deltaX) > Math.abs(deltaY)) {
+            setDirection(deltaX > 0 ? 1 : -1, 0);
+        } else {
+            setDirection(0, deltaY > 0 ? 1 : -1);
+        }
+    }, { passive: true });
+
+
+    // 2. D-PAD BUTTON HANDLER
+    controls.addEventListener('click', (e) => {
+        if (e.target.tagName === 'BUTTON') {
+            e.preventDefault();
+            if (isGameOver) return;
+
+            const direction = e.target.getAttribute('data-direction');
+
+            switch (direction) {
+                case 'up':
+                    setDirection(0, -1);
+                    break;
+                case 'down':
+                    setDirection(0, 1);
+                    break;
+                case 'left':
+                    setDirection(-1, 0);
+                    break;
+                case 'right':
+                    setDirection(1, 0);
+                    break;
+            }
+        }
+    });
+
+    // Combined Start/Restart/Save button handler
+    restartButton.addEventListener('click', () => {
+        if (isGameOver) {
+            // State 1: GAME OVER -> Save Score & Restart
+            const name = playerNameInput.value.substring(0, 10).toUpperCase();
+            saveScore(name, score);
+            initializeGame();
+        } else if (!isGameStarted) {
+            // State 2: INITIAL START -> Begin Game via the button
+            // FIX: Removed redundant state setting here. setDirection will handle 
+            // isGameStarted=true, hiding the messageBox, and toggling visibility.
+            
+            // Set a default starting direction (e.g., right)
+            setDirection(1, 0); 
+        }
+    });
+
+    // --- RESIZE AND START ---
+
+    function resizeCanvas() {
+        const gameContainer = canvas.parentElement;
+        // Determine the smaller of the two dimensions to keep the canvas square
+        const size = Math.min(gameContainer.clientWidth - 40, 400); 
+        
+        canvas.width = size;
+        canvas.height = size;
+        
+        tileSize = canvas.width / TILE_COUNT;
+        
+        // When resizing, re-check visibility (it might move from mobile to desktop view)
+        toggleLeaderboardVisibility(isGameOver || !isGameStarted);
+
+        draw();
+    }
+
+    window.onload = function() {
+        setupFirebase();
+        resizeCanvas();
+        initializeGame();
+    }
+    
+    window.addEventListener('resize', resizeCanvas);
+</script>
+</body>
+</html>
