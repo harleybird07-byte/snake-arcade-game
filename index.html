@@ -17,6 +17,7 @@
             font-family: 'Press Start 2P', monospace;
             color: #d8dee9; /* Light text color */
             overflow: auto; /* Allow scrolling if content is too large */
+            touch-action: none; /* Prevents default browser touch actions on the whole body */
         }
 
         .main-wrapper {
@@ -66,7 +67,8 @@
             box-shadow: 0 0 15px rgba(255, 0, 119, 0.8);
             max-width: 100%; /* Important for responsiveness */
             height: auto;
-            aspect-ratio: 1 / 1; 
+            aspect-ratio: 1 / 1;
+            touch-action: none; /* CRITICAL for preventing double-tap zoom/scroll */ 
         }
 
         .controls {
@@ -151,6 +153,7 @@
             cursor: pointer;
             box-shadow: 0 4px #990047;
             transition: all 0.1s;
+            touch-action: manipulation; /* Optimizes for touch response */
         }
 
         .control-button:active {
@@ -272,10 +275,11 @@
                 SCORE: <span id="scoreValue" class="score-value">0</span>
             </div>
 
+            <!-- Canvas is now touch-enabled for swipes -->
             <canvas id="gameCanvas" width="400" height="400"></canvas>
 
             <div class="controls">
-                <!-- Directional controls for mobile/touch users -->
+                <!-- Directional controls for mobile/touch users (kept for D-Pad style tapping) -->
                 <button class="control-button" data-direction="up">Up</button>
                 <button class="control-button" data-direction="left">Left</button>
                 <button class="control-button" data-direction="right">Right</button>
@@ -348,6 +352,11 @@
     let lastPlayerDirection = { x: 0, y: 0 }; 
     let isGameStarted = false; 
     let isGameOver = false;
+    
+    // --- TOUCH/SWIPE STATE ---
+    let touchStartX = 0;
+    let touchStartY = 0;
+    const SWIPE_THRESHOLD = 50; // Minimum distance (pixels) for a swipe to register
 
     // --- FIREBASE STATE ---
     let db;
@@ -854,6 +863,7 @@
     // --- INPUT HANDLERS ---
 
     function setDirection(newX, newY) {
+        // Prevents reversing direction immediately
         if (lastPlayerDirection.x === -newX && lastPlayerDirection.y === -newY) {
             return;
         }
@@ -891,10 +901,47 @@
         }
     });
 
+    // 1. SWIPE CONTROLS IMPLEMENTATION
+    
+    // Set up touch start listener to capture initial position
+    canvas.addEventListener('touchstart', (e) => {
+        if (isGameOver) return;
+        // Don't prevent default on start, but allow it to be captured
+        const touch = e.touches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+    }, { passive: true });
+
+    // We only need to check direction on the end of the touch gesture
+    canvas.addEventListener('touchend', (e) => {
+        if (isGameOver) return;
+        
+        const touchEnd = e.changedTouches[0];
+        const deltaX = touchEnd.clientX - touchStartX;
+        const deltaY = touchEnd.clientY - touchStartY;
+
+        // Check if the movement was large enough to be considered a swipe
+        if (Math.abs(deltaX) < SWIPE_THRESHOLD && Math.abs(deltaY) < SWIPE_THRESHOLD) {
+            return; // Not a swipe
+        }
+
+        if (Math.abs(deltaX) > Math.abs(deltaY)) {
+            // Horizontal swipe (Left or Right)
+            setDirection(deltaX > 0 ? 1 : -1, 0);
+        } else {
+            // Vertical swipe (Up or Down)
+            setDirection(0, deltaY > 0 ? 1 : -1);
+        }
+    }, { passive: true });
+
+
+    // 2. D-PAD BUTTON FIX (Ensuring no default browser zoom)
     controls.addEventListener('click', (e) => {
         if (e.target.tagName === 'BUTTON') {
-            const direction = e.target.getAttribute('data-direction');
+            e.preventDefault(); // CRITICAL: Stop the browser from zooming on quick successive taps
             if (isGameOver) return;
+
+            const direction = e.target.getAttribute('data-direction');
 
             switch (direction) {
                 case 'up':
