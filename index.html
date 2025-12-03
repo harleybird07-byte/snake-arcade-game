@@ -238,16 +238,7 @@
                 width: 90vw; 
                 max-width: 400px;
             }
-            .leaderboard-column {
-                order: -1; /* Place leaderboard above game on mobile */
-                margin-bottom: 20px;
-            }
-            #leaderboard {
-                max-width: 90vw;
-            }
-            h1 {
-                font-size: 1.2rem;
-            }
+            /* .leaderboard-column will be controlled by JS for mobile */
         }
     </style>
 </head>
@@ -255,7 +246,7 @@
 
 <div class="main-wrapper">
     <!-- LEADERBOARD COLUMN -->
-    <div class="leaderboard-column">
+    <div class="leaderboard-column" id="leaderboardColumn">
         <div id="leaderboard">
             <h2>TOP 10 SCORES</h2>
             <ul id="leaderboardList" class="leaderboard-list">
@@ -322,13 +313,14 @@
     const playerNameInput = document.getElementById('playerNameInput');
     const nameInputGroup = document.getElementById('nameInputGroup');
     const displayUserId = document.getElementById('displayUserId');
+    const leaderboardColumn = document.getElementById('leaderboardColumn'); // NEW: Get the leaderboard container
 
     // --- GAME CONSTANTS AND STATE ---
     const TILE_COUNT = 20;
     const INITIAL_SPEED = 150; 
     const SPEED_INCREMENT = 5; 
-    const MAX_SPEED_CAP_SCORE = 15; // Speed cap reached faster
-    const APPLES_REQUIRED_FOR_WIN = 100; // Increase goal score
+    const MAX_SPEED_CAP_SCORE = 15; 
+    const APPLES_REQUIRED_FOR_WIN = 100; 
 
     // Difficulty thresholds (based on score/apples)
     const OBSTACLE_THRESHOLD_1 = 20;
@@ -337,15 +329,15 @@
     const OBSTACLE_COUNT_1 = 5;
     const OBSTACLE_COUNT_2 = 10;
     const MAX_ENEMY_SNAKES = 3; 
-    const ENEMY_AI_MOVE_CHANCE = 0.7; // 70% chance AI tries to move towards player
+    const ENEMY_AI_MOVE_CHANCE = 0.7; 
 
     let tileSize; 
     let playerSnake = [];
     let playerVelocity = { x: 0, y: 0 };
     let food = { x: 10, y: 5 };
     let blackHole = null; 
-    let obstacles = []; // Array of {x, y} tiles
-    let enemySnakes = []; // Array of enemy snake objects
+    let obstacles = []; 
+    let enemySnakes = []; 
     let score = 0;
     let gameSpeed = INITIAL_SPEED; 
     let gameInterval;
@@ -356,7 +348,7 @@
     // --- TOUCH/SWIPE STATE ---
     let touchStartX = 0;
     let touchStartY = 0;
-    const SWIPE_THRESHOLD = 50; // Minimum distance (pixels) for a swipe to register
+    const SWIPE_THRESHOLD = 50; 
 
     // --- FIREBASE STATE ---
     let db;
@@ -455,6 +447,17 @@
             leaderboardList.innerHTML = '<li style="justify-content:center; color: #ff0077;">Error loading scores.</li>';
         });
     }
+    
+    // NEW: Function to toggle leaderboard visibility based on screen size
+    function toggleLeaderboardVisibility(show) {
+        if (window.innerWidth <= 800) {
+            leaderboardColumn.style.display = show ? 'flex' : 'none';
+        } else {
+            // Always show on desktop
+            leaderboardColumn.style.display = 'flex';
+        }
+    }
+
 
     // --- GAME INITIALIZATION AND STATE RESET ---
 
@@ -480,10 +483,13 @@
         finalScoreDisplay.style.display = 'none'; 
         restartButton.textContent = 'Start Game';
 
-        messageText.textContent = 'Welcome to SNAKE ARCADE!';
+        messageText.textContent = 'Welcome to SNAKE ARCADE! Swipe or use arrows to move.';
         messageText.classList.remove('game-over-text');
         messageBox.style.display = 'flex';
         
+        // NEW: Hide leaderboard on initialization if on mobile
+        toggleLeaderboardVisibility(false);
+
         placeFood();
         
         clearInterval(gameInterval);
@@ -560,7 +566,7 @@
     // --- ENEMY SNAKE MANAGEMENT ---
 
     function spawnEnemySnake() {
-        if (enemySnakes.length >= MAX_ENEMY_SNAKES) return;
+        if (enemySnakes.length >= MAX_ENEMY_SNACKS) return;
 
         let startPos;
         do {
@@ -679,7 +685,7 @@
                 generateObstacles(OBSTACLE_COUNT_2);
                 spawnEnemySnake(); // Start spawning enemies at this level
             }
-            if (score > ENEMY_SNAKE_THRESHOLD && score % 10 === 0 && enemySnakes.length < MAX_ENEMY_SNAKES) {
+            if (score > ENEMY_SNAKE_THRESHOLD && score % 10 === 0 && enemySnakes.length < MAX_ENEMY_SNACKS) {
                 spawnEnemySnake();
             }
 
@@ -749,6 +755,9 @@
         restartButton.textContent = 'Save Score & Restart';
         messageBox.style.display = 'flex';
         playerNameInput.focus();
+        
+        // NEW: Show leaderboard when game ends
+        toggleLeaderboardVisibility(true);
     }
 
     function levelWon() {
@@ -774,7 +783,7 @@
         }
     }
 
-    // --- DRAWING FUNCTIONS ---
+    // --- DRAWING FUNCTIONS (Unchanged) ---
 
     function clearScreen() {
         ctx.fillStyle = '#0d1117'; 
@@ -860,7 +869,7 @@
         drawSnake();
     }
 
-    // --- INPUT HANDLERS ---
+    // --- INPUT HANDLERS (Unchanged) ---
 
     function setDirection(newX, newY) {
         // Prevents reversing direction immediately
@@ -874,12 +883,14 @@
         if (!isGameStarted && !isGameOver) {
             isGameStarted = true;
             messageBox.style.display = 'none';
+            // Hide leaderboard when the game officially starts
+            toggleLeaderboardVisibility(false); 
         }
     }
 
     document.addEventListener('keydown', (e) => {
         if (messageBox.style.display === 'flex' && isGameStarted) return;
-        if (isGameOver && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return; // Ignore movement keys when game over modal is active
+        if (isGameOver && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return; 
 
         switch (e.key) {
             case 'ArrowUp':
@@ -903,16 +914,13 @@
 
     // 1. SWIPE CONTROLS IMPLEMENTATION
     
-    // Set up touch start listener to capture initial position
     canvas.addEventListener('touchstart', (e) => {
         if (isGameOver) return;
-        // Don't prevent default on start, but allow it to be captured
         const touch = e.touches[0];
         touchStartX = touch.clientX;
         touchStartY = touch.clientY;
     }, { passive: true });
 
-    // We only need to check direction on the end of the touch gesture
     canvas.addEventListener('touchend', (e) => {
         if (isGameOver) return;
         
@@ -920,25 +928,22 @@
         const deltaX = touchEnd.clientX - touchStartX;
         const deltaY = touchEnd.clientY - touchStartY;
 
-        // Check if the movement was large enough to be considered a swipe
         if (Math.abs(deltaX) < SWIPE_THRESHOLD && Math.abs(deltaY) < SWIPE_THRESHOLD) {
-            return; // Not a swipe
+            return;
         }
 
         if (Math.abs(deltaX) > Math.abs(deltaY)) {
-            // Horizontal swipe (Left or Right)
             setDirection(deltaX > 0 ? 1 : -1, 0);
         } else {
-            // Vertical swipe (Up or Down)
             setDirection(0, deltaY > 0 ? 1 : -1);
         }
     }, { passive: true });
 
 
-    // 2. D-PAD BUTTON FIX (Ensuring no default browser zoom)
+    // 2. D-PAD BUTTON FIX 
     controls.addEventListener('click', (e) => {
         if (e.target.tagName === 'BUTTON') {
-            e.preventDefault(); // CRITICAL: Stop the browser from zooming on quick successive taps
+            e.preventDefault();
             if (isGameOver) return;
 
             const direction = e.target.getAttribute('data-direction');
@@ -971,6 +976,7 @@
             // State 2: INITIAL START -> Begin Game via the button
             isGameStarted = true;
             messageBox.style.display = 'none';
+            toggleLeaderboardVisibility(false); // Hide it when starting
             // Set a default starting direction (e.g., right)
             setDirection(1, 0); 
         }
@@ -987,6 +993,10 @@
         canvas.height = size;
         
         tileSize = canvas.width / TILE_COUNT;
+        
+        // When resizing, re-check visibility (it might move from mobile to desktop view)
+        toggleLeaderboardVisibility(isGameOver || !isGameStarted);
+
         draw();
     }
 
